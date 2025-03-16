@@ -31,9 +31,13 @@ ALLOWED_HOSTS = [
     '192.168.1.8',
     '192.168.43.154',
     '5692-156-197-64-193.ngrok-free.app',
-    '92f0-156-197-64-193.ngrok-free.app'
+    '1fe8-156-197-64-193.ngrok-free.app'
 ]
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
+
+STATIC_URL = '/static/'
+
+DEBUG = True  # في وضع التطوير
 
 
 
@@ -129,8 +133,6 @@ USE_TZ = True
 
 # Static files (CSS, JavaScript, Images)
 # https://docs.djangoproject.com/en/5.1/howto/static-files/
-
-STATIC_URL = 'static/'
 
 # Default primary key field type
 # https://docs.djangoproject.com/en/5.1/ref/settings/#defa

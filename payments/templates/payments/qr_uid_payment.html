@@ -1,0 +1,72 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>QR Code Payment - Enter UID</title>
+  <style>
+    body {
+      background-color: #000;
+      color: #FFA500;
+      font-family: Arial, sans-serif;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      height: 100vh;
+      margin: 0;
+    }
+    .container {
+      text-align: center;
+      padding: 20px;
+      border: 2px solid #FFA500;
+      background-color: #111;
+      border-radius: 10px;
+    }
+    h1 {
+      margin-bottom: 20px;
+      font-size: 2em;
+      color: #fff;
+    }
+    input[type="text"] {
+      padding: 10px;
+      font-size: 1.2em;
+      border: 1px solid #FFA500;
+      border-radius: 5px;
+      width: 250px;
+    }
+    input[type="submit"] {
+      padding: 10px 20px;
+      font-size: 1.2em;
+      margin-top: 20px;
+      background-color: #FFA500;
+      border: none;
+      border-radius: 5px;
+      color: #000;
+      cursor: pointer;
+    }
+    .message {
+      margin-top: 20px;
+      font-size: 1.2em;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>Enter Your UID</h1>
+    <form method="post">
+      {% csrf_token %}
+      <input type="text" name="uid" placeholder="Enter UID" required>
+      <br>
+      <input type="submit" value="Confirm Payment">
+    </form>
+    {% if error %}
+      <div class="message" style="color: red;">{{ error }}</div>
+    {% endif %}
+    {% if success %}
+      <div class="message" style="color: green;">{{ success }}</div>
+      <div class="message">Client Name: {{ client_name }}</div>
+      <div class="message">New Balance: {{ new_balance }}</div>
+    {% endif %}
+  </div>
+</body>
+</html>

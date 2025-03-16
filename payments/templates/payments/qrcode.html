@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>QR Code Payment</title>
+  <style>
+    @font-face {
+      font-family: 'SpantaranRegular';
+      src: url('/static/payments/fonts/SpantaranRegular.ttf') format('truetype');
+      font-weight: normal;
+      font-style: normal;
+    }
+    body {
+      background-color: #000; /* خلفية سوداء */
+      margin: 0;
+      padding: 0;
+      font-family: Arial, sans-serif; /* الخط الافتراضي */
+      overflow: hidden;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      height: 100vh;
+      color: #FFA500; /* نص برتقالي */
+    }
+    .left-logo, .right-logo {
+      position: absolute;
+      top: 50%;
+      transform: translateY(-50%);
+      opacity: 0.1;
+      width: 150px;  /* زيادة حجم اللوجو */
+      height: auto;
+    }
+    .left-logo { left: 30px; }
+    .right-logo { right: 30px; }
+    .content {
+      z-index: 1;
+      text-align: center;
+      padding: 0 20px;
+      width: 100%;
+      box-sizing: border-box;
+    }
+    h1 {
+      margin-bottom: 40px;
+      font-size: 3em;  /* تكبير العنوان */
+      font-family: 'SpantaranRegular', sans-serif;
+      font-weight: normal;
+      color: #fff;
+    }
+    img#qrImage {
+      width: 500px;  /* تكبير رمز الـ QR */
+      height: 500px;
+      border: 5px solid #FFA500;
+      box-shadow: 0 0 40px rgba(255, 165, 0, 0.8);
+    }
+    .car-info {
+      margin-top: 30px;
+      font-size: 2em;  /* تكبير نص رقم السيارة */
+      color: #fff !important;
+      font-family: "Times New Roman", serif;
+      white-space: normal;
+    }
+  </style>
+  <script>
+    function refreshQR() {
+      document.getElementById("qrImage").src = "/payments/qr_img/?t=" + new Date().getTime();
+    }
+    setInterval(refreshQR, 80000);
+    window.onload = refreshQR;
+  </script>
+</head>
+<body>
+  <!-- اللوجو على الجانبين -->
+  <img src="/static/payments/images/LOGO.png" alt="Left Logo" class="left-logo">
+  <img src="/static/payments/images/LOGO.png" alt="Right Logo" class="right-logo">
+  
+  <div class="content">
+    <h1>Scan QR Code to Pay</h1>
+    <img id="qrImage" src="" alt="QR Code Payment">
+    <div class="car-info">Car Number : a5541</div>
+  </div>
+</body>
+</html>
