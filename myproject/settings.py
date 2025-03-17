@@ -30,8 +30,7 @@ ALLOWED_HOSTS = [
     '127.0.0.1',
     '192.168.1.8',
     '192.168.43.154',
-    '5692-156-197-64-193.ngrok-free.app',
-    '1fe8-156-197-64-193.ngrok-free.app'
+    'fe2d-197-35-211-108.ngrok-free.app',
 ]
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 

@@ -60,6 +60,7 @@ class PaymentAPIView(APIView):
                 "status": "Failed"
             }, status=status.HTTP_404_NOT_FOUND)
         
+        # تعيين قيمة التعرفة الثابتة
         fare = Decimal('5')
         new_balance = customer.balance - fare
         if new_balance < 0:
@@ -71,8 +72,11 @@ class PaymentAPIView(APIView):
                 "status": "Failed"
             }, status=status.HTTP_400_BAD_REQUEST)
         
-        # قراءة payment_method من الطلب، وفي حال عدم وجوده نستخدم القيمة الافتراضية 'qr'
-        payment_method = request.data.get('payment_method', 'qr').strip().lower()
+        # قراءة payment_method من الطلب والتأكد من صحته
+        payment_method = request.data.get('payment_method', '').strip().lower()
+        if payment_method not in ['nfc', 'qr']:
+            payment_method = 'qr'  # افتراضيًا لو القيمة غير صحيحة أو غير موجودة
+        
         # تحديث رصيد العميل وإتمام العملية
         customer.balance = new_balance
         customer.save()
@@ -130,12 +134,13 @@ class QrPaymentAPIView(APIView):
         token = request.GET.get('token', '')
         if not token:
             return Response({"error": "Missing token"}, status=status.HTTP_400_BAD_REQUEST)
-        # منطق الدفع عبر QR يمكن تطويره لاحقاً؛ هنا نُرجع استجابة ثابتة
+        # منطق الدفع عبر QR يمكن تطويره لاحقاً؛ هنا نُرجع استجابة ثابتة مع تحديد طريقة الدفع كـ "QR"
         return Response({
             "message": "OK",
             "client_name": "Test Client",
             "new_balance": 45.0,
-            "fare": 5
+            "fare": 5,
+            "payment_method": "QR"
         }, status=status.HTTP_200_OK)
 
 def qr_page(request):
@@ -168,6 +173,7 @@ def qr_uid_payment(request):
                 context['error'] = "Not Successful (Card not registered)"
                 return render(request, 'payments/qr_uid_payment.html', context)
             
+            # تعيين قيمة التعرفة الثابتة
             fare = Decimal('5')
             new_balance = customer.balance - fare
             if new_balance < 0:
@@ -176,7 +182,7 @@ def qr_uid_payment(request):
                 context['current_balance'] = float(customer.balance)
                 return render(request, 'payments/qr_uid_payment.html', context)
             
-            # إجراء عملية الدفع عبر QR، مع تحديد طريقة الدفع كـ "qr"
+            # إجراء عملية الدفع عبر QR مع تحديد طريقة الدفع كـ "qr"
             customer.balance = new_balance
             customer.save()
             now = timezone.localtime()
