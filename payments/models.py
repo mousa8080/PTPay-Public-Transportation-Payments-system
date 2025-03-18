@@ -13,6 +13,7 @@ class Payment(models.Model):
     PAYMENT_METHOD_CHOICES = (
          ('nfc', 'NFC Card'),
          ('qr', 'QR'),
+         ('unk', 'Unknown'),
     )
     customer = models.ForeignKey(Customer, on_delete=models.CASCADE)
     fare = models.DecimalField(max_digits=10, decimal_places=2, default=Decimal('0.00'))

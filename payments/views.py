@@ -1,15 +1,17 @@
 import io
 import qrcode
+from decimal import Decimal
 from django.http import HttpResponse
 from django.shortcuts import render
 from django.utils.crypto import get_random_string
-from decimal import Decimal
 from django.utils import timezone
+from django.views.decorators.csrf import csrf_exempt
+from django.utils.decorators import method_decorator
+
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status
-from django.views.decorators.csrf import csrf_exempt
-from django.utils.decorators import method_decorator
+
 from .models import Customer, Payment
 from .serializers import CustomerSerializer
 
@@ -17,8 +19,11 @@ from .serializers import CustomerSerializer
 class PaymentAPIView(APIView):
     """
     API لمعالجة عملية الدفع باستخدام Django REST Framework.
-    يستقبل طلب POST ببيانات JSON تحتوي على 'uid' و(اختياريًا) 'payment_method'.
-    تُرجع الاستجابة بالشكل التالي في حالات مختلفة:
+    يقبل الطلبات بواسطة:
+      - GET: لإظهار رسالة توجيهية للمستخدم.
+      - POST: لمعالجة عملية الدفع باستخدام بيانات JSON تحتوي على 'uid' و(اختياريًا) 'payment_method'.
+    
+    الاستجابات:
     
     1. عند النجاح:
        {
@@ -28,7 +33,7 @@ class PaymentAPIView(APIView):
          "fare": 5,
          "date": "<تاريخ العملية>",
          "time": "<وقت العملية>",
-         "payment_method": "<NFC Card or QR>",
+         "payment_method": "<NFC Card or QR or Unknown>",
          "status": "Successful"
        }
     
@@ -47,6 +52,12 @@ class PaymentAPIView(APIView):
          "status": "Failed"
        }
     """
+    def get(self, request, *args, **kwargs):
+        # نستخدم GET فقط لإظهار رسالة إرشادية؛ العملية الفعلية تتم عبر POST
+        return Response({
+            "detail": "يرجى استخدام POST لإجراء عملية الدفع."
+        }, status=status.HTTP_200_OK)
+
     def post(self, request, *args, **kwargs):
         uid = request.data.get('uid', '').strip()
         if not uid:
@@ -73,9 +84,13 @@ class PaymentAPIView(APIView):
             }, status=status.HTTP_400_BAD_REQUEST)
         
         # قراءة payment_method من الطلب والتأكد من صحته
-        payment_method = request.data.get('payment_method', '').strip().lower()
-        if payment_method not in ['nfc', 'qr']:
-            payment_method = 'qr'  # افتراضيًا لو القيمة غير صحيحة أو غير موجودة
+        payment_method_raw = request.data.get('payment_method', '').strip().lower()
+        if payment_method_raw in ['nfc', 'qr']:
+            payment_method = payment_method_raw
+            display_payment_method = "NFC Card" if payment_method == "nfc" else "QR"
+        else:
+            payment_method = 'unk'
+            display_payment_method = "Unknown"
         
         # تحديث رصيد العميل وإتمام العملية
         customer.balance = new_balance
@@ -94,9 +109,6 @@ class PaymentAPIView(APIView):
             payment_method=payment_method
         )
         
-        # تحويل قيمة طريقة الدفع إلى الصيغة المرغوبة في الاستجابة
-        display_payment_method = "NFC Card" if payment_method == "nfc" else "QR"
-        
         return Response({
             "message": "OK",
             "client_name": customer.name,
@@ -110,6 +122,9 @@ class PaymentAPIView(APIView):
 
 @csrf_exempt
 def do_get(request):
+    """
+    View تُعيد رسالة خطأ عند استخدام GET بدلاً من POST.
+    """
     if request.method != 'POST':
         return Response("Method Not Allowed", status=status.HTTP_405_METHOD_NOT_ALLOWED)
     return Response({"error": "Legacy do_get not implemented"}, status=status.HTTP_501_NOT_IMPLEMENTED)
@@ -128,7 +143,6 @@ class QrPaymentAPIView(APIView):
     """
     API لمعالجة الدفع عبر QR Code.
     يستقبل طلب GET مع معلمة 'token' في URL.
-    هنا مثال توضيحي بسيط.
     """
     def get(self, request, *args, **kwargs):
         token = request.GET.get('token', '')
@@ -146,7 +160,7 @@ class QrPaymentAPIView(APIView):
 def qr_page(request):
     """
     View لعرض صفحة الويب التي تحتوي على رمز QR.
-    يتم استخدام قالب (template) qrcode.html الموجود في payments/templates/payments/.
+    يستخدم القالب (template) qrcode.html الموجود في payments/templates/payments/.
     """
     return render(request, 'payments/qrcode.html')
 
@@ -154,8 +168,7 @@ def qr_page(request):
 def qr_uid_payment(request):
     """
     View لمعالجة عملية الدفع عبر QR Code باستخدام إدخال UID يدويًا.
-    يجب أن يكون هناك معلمة 'token' في URL (أي يتم الوصول إليها بعد مسح رمز QR).
-    إذا لم يكن هناك token، يتم إظهار رسالة تفيد بضرورة مسح رمز QR أولاً.
+    يجب أن يكون هناك معلمة 'token' في URL (أي بعد مسح رمز QR).
     """
     token = request.GET.get('token', '')
     if not token:
@@ -176,7 +189,7 @@ def qr_uid_payment(request):
             # تعيين قيمة التعرفة الثابتة
             fare = Decimal('5')
             new_balance = customer.balance - fare
-            if new_balance < 0:
+            if (new_balance < 0):
                 context['error'] = "Not Successful (No balance)"
                 context['client_name'] = customer.name
                 context['current_balance'] = float(customer.balance)
@@ -208,8 +221,7 @@ def generate_qr_image(request):
     يُرجع صورة QR بصيغة PNG.
     """
     token = get_random_string(20)
-    public_url = "https://1fe8-156-197-64-193.ngrok-free.app"
-    # نوجه الرابط لصفحة إدخال UID
+    public_url = "https://d471-197-35-211-108.ngrok-free.app"
     qr_data = public_url + "/payments/qr_uid/?token=" + token
     img = qrcode.make(qr_data)
     buf = io.BytesIO()
