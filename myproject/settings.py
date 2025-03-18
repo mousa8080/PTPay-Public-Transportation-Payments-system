@@ -25,13 +25,14 @@ SECRET_KEY = 'django-insecure-3m7hq^z)he5v+pnw53&=(x!cip=+pq3)gx!6+2-8kfu=^lmydy
 DEBUG = True
 
 ALLOWED_HOSTS = [
-    'Essa-Mohamed.pythonanywhere.com',
+    'https://ahmed80800.pythonanywhere.com/',
     'localhost',
     '127.0.0.1',
     '192.168.1.8',
     '192.168.43.154',
     '127.0.0.1:8000',
 ]
+
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
 STATIC_URL = '/static/'
