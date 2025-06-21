@@ -1,0 +1,2174 @@
+# ===== File: payments/admin.py =====
+
+# ===== File: payments/admin.py =====
+
+from django.contrib import admin
+from django.utils.html import format_html
+
+from .models import (
+    Governorate,
+    City,
+    Customer,
+    Driver,
+    Vehicle,
+    Route,
+    Trip,
+    Payment,
+    CustomerWallet,
+    DriverWallet,
+    NFCCard,
+    Transfer,
+    Device,
+    DeviceLocation,
+)
+
+@admin.register(CustomerWallet)
+class CustomerWalletAdmin(admin.ModelAdmin):
+    list_display = ('id', 'customer', 'balance')
+    search_fields = ('customer__name',)
+
+@admin.register(DriverWallet)
+class DriverWalletAdmin(admin.ModelAdmin):
+    list_display = ('id', 'driver', 'balance', 'pending_balance')
+    search_fields = ('driver__name',)
+
+@admin.register(Customer)
+class CustomerAdmin(admin.ModelAdmin):
+    list_display = (
+        'id', 'name', 'national_id', 'phone',
+        'email', 'governorate', 'city', 'is_active'
+    )
+    list_filter = ('governorate', 'city', 'is_active')
+    search_fields = ('name', 'national_id', 'phone', 'email')
+
+@admin.register(Driver)
+class DriverAdmin(admin.ModelAdmin):
+    list_display = (
+        'id', 'uid', 'name', 'national_id', 'phone',
+        'email', 'license_number', 'governorate',
+        'city', 'in_zone', 'driver_photo_thumb',
+        'license_photo_thumb'
+    )
+    list_filter = ('governorate', 'city', 'in_zone')
+    search_fields = (
+        'name', 'national_id', 'phone',
+        'email', 'license_number'
+    )
+    readonly_fields = ('driver_photo_thumb', 'license_photo_thumb')
+
+    def driver_photo_thumb(self, obj):
+        if obj.driver_photo:
+            return format_html(
+                '<img src="{}" style="max-height:60px;"/>',
+                obj.driver_photo.url
+            )
+        return "-"
+    driver_photo_thumb.short_description = 'Driver Photo'
+
+    def license_photo_thumb(self, obj):
+        if obj.license_photo:
+            return format_html(
+                '<img src="{}" style="max-height:60px;"/>',
+                obj.license_photo.url
+            )
+        return "-"
+    license_photo_thumb.short_description = 'License Photo'
+
+@admin.register(Governorate)
+class GovernorateAdmin(admin.ModelAdmin):
+    list_display = ('id', 'name')
+    search_fields = ('name',)
+
+@admin.register(City)
+class CityAdmin(admin.ModelAdmin):
+    list_display = ('id', 'name', 'governorate')
+    list_filter = ('governorate',)
+    search_fields = ('name',)
+
+@admin.register(Vehicle)
+class VehicleAdmin(admin.ModelAdmin):
+    list_display = ('id', 'number', 'driver')
+    list_filter = ('driver__governorate', 'driver__city')
+    search_fields = ('number', 'driver__name')
+
+# @admin.register(Route)
+# class RouteAdmin(admin.ModelAdmin):
+#     list_display = ('id', 'name', 'city')
+#     list_filter = ('city__governorate', 'city')
+#     search_fields = ('name',)
+
+@admin.register(Trip)
+class TripAdmin(admin.ModelAdmin):
+    list_display = (
+        'id', 'driver', 'vehicle', 'route',
+        'date', 'sequence_number', 'start_time',
+        'end_time', 'in_zone','get_paid_passengers',
+    )
+
+    @admin.display(description='Number of fees paid')
+    def get_paid_passengers(self, obj):
+        return Payment.objects.filter(trip=obj).count()
+
+    list_filter = ('date', 'driver', 'route', 'in_zone')
+    search_fields = ('driver__name', 'vehicle__number')
+
+@admin.register(Payment)
+class PaymentAdmin(admin.ModelAdmin):
+    list_display = (
+        'id', 'customer', 'trip', 'fare',
+        'new_balance', 'timestamp', 'payment_method'
+    )
+    list_filter = ('payment_method', 'timestamp')
+    search_fields = ('customer__name', 'trip__driver__name')
+
+@admin.register(NFCCard)
+class NFCCardAdmin(admin.ModelAdmin):
+    list_display = ('uid', 'customer')
+    search_fields = ('uid', 'customer__name')
+
+@admin.register(Transfer)
+class TransferAdmin(admin.ModelAdmin):
+    pass
+
+@admin.register(Device)
+class DeviceAdmin(admin.ModelAdmin):
+    list_display = ('id', 'name')
+    search_fields = ('name',)
+
+@admin.register(DeviceLocation)
+class DeviceLocationAdmin(admin.ModelAdmin):
+    list_display = ('id', 'device', 'latitude', 'longitude', 'timestamp')
+    search_fields = ('device__name',)
+
+
+
+# payments/admin.py
+
+from .models import Stop
+
+class StopInline(admin.TabularInline):
+    model = Stop
+    extra = 1
+
+@admin.register(Route)
+class RouteAdmin(admin.ModelAdmin):
+    exclude = (
+        'name',
+        'start_stop_name', 'start_latitude', 'start_longitude',
+        'end_stop_name',   'end_latitude',   'end_longitude',
+    )
+    list_display = ('id', 'display_name', 'city')
+    inlines      = [StopInline]
+
+# ===== File: payments/models.py =====
+
+# ===== File: payments/models.py =====
+
+from django.db import models
+from decimal import Decimal
+from django.contrib.auth.hashers import make_password, identify_hasher
+from django.core.validators import MinLengthValidator, RegexValidator
+from django.utils.crypto import get_random_string
+from django.db.models.signals import post_save, pre_save
+from django.db.models import Q, UniqueConstraint
+from django.dispatch import receiver
+from django.utils import timezone
+from django.contrib.contenttypes.models import ContentType
+from django.contrib.contenttypes.fields import GenericForeignKey
+
+class Governorate(models.Model):
+    name = models.CharField(max_length=100, unique=True)
+    def __str__(self):
+        return self.name
+
+class City(models.Model):
+    name        = models.CharField(max_length=100)
+    governorate = models.ForeignKey(Governorate, on_delete=models.SET_NULL, null=True, blank=True)
+    def __str__(self):
+        return f"{self.name} ({self.governorate.name if self.governorate else '-'})"
+
+class Device(models.Model):
+    name = models.CharField(max_length=100)
+    def __str__(self):
+        return f"Device {self.id}: {self.name}"
+
+class DeviceLocation(models.Model):
+    device    = models.ForeignKey(Device, on_delete=models.CASCADE, related_name='locations')
+    latitude  = models.FloatField()
+    longitude = models.FloatField()
+    timestamp = models.DateTimeField(auto_now_add=True)
+    class Meta:
+        ordering = ['-timestamp']
+    def __str__(self):
+        return f"Loc {self.id} of Device {self.device.id} at {self.timestamp}"
+
+class Customer(models.Model):
+    name        = models.CharField(max_length=100)
+    uid         = models.CharField(max_length=100, unique=True, blank=True, null=True)
+    national_id = models.CharField(max_length=14, unique=True,
+        validators=[MinLengthValidator(14), RegexValidator(r'^\d{14}$')])
+    phone       = models.CharField(max_length=11, unique=True,
+        validators=[MinLengthValidator(11), RegexValidator(r'^\d{11}$')])
+    email       = models.EmailField(unique=True,
+        validators=[RegexValidator(r'^[\w.+-]+@gmail\.com$')])
+    password    = models.CharField(max_length=128, validators=[MinLengthValidator(8)])
+    governorate = models.ForeignKey(Governorate, on_delete=models.SET_NULL, null=True, blank=True)
+    city        = models.ForeignKey(City, on_delete=models.SET_NULL, null=True, blank=True)
+    is_active   = models.BooleanField(default=True)
+
+    def save(self, *args, **kwargs):
+        raw = self.password or ""
+        try:
+            identify_hasher(raw)
+        except:
+            self.password = make_password(raw)
+        if not self.uid:
+            self.uid = get_random_string(10)
+        super().save(*args, **kwargs)
+
+    def __str__(self):
+        return f"{self.name} ({self.national_id})"
+
+class Driver(models.Model):
+    uid = models.CharField(max_length=100, unique=True, blank=True, null=True)
+
+    @property
+    def is_authenticated(self):
+        return True
+
+    name = models.CharField(max_length=100)
+
+    national_id = models.CharField(
+        max_length=14,
+        unique=True,
+        validators=[
+            MinLengthValidator(14),
+            RegexValidator(r'^\d{14}$')
+        ]
+    )
+
+    phone = models.CharField(
+        max_length=11,
+        unique=True,
+        validators=[
+            MinLengthValidator(11),
+            RegexValidator(r'^\d{11}$')
+        ]
+    )
+
+    email = models.EmailField(
+        unique=True,
+        validators=[
+            RegexValidator(r'^[\w.+-]+@gmail\.com$')
+        ]
+    )
+
+    password = models.CharField(
+        max_length=128,
+        validators=[MinLengthValidator(8)]
+    )
+
+    license_number = models.CharField(max_length=50, unique=True)
+
+    driver_photo = models.ImageField(
+        upload_to='drivers/photos/', null=True, blank=True
+    )
+
+    license_photo = models.ImageField(
+        upload_to='drivers/licenses/', null=True, blank=True
+    )
+
+    governorate = models.ForeignKey(
+        'Governorate',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True
+    )
+
+    city = models.ForeignKey(
+        'City',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True
+    )
+
+    in_zone = models.BooleanField(default=False)
+
+    assigned_device = models.OneToOneField(
+        'Device',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='driver'
+    )
+
+    assigned_route = models.ForeignKey(
+        'Route',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='drivers'
+    )
+
+    def save(self, *args, **kwargs):
+        # توليد uid تلقائيًا إذا مش موجود
+        if not self.uid:
+            self.uid = get_random_string(12)  # 12 حرف عشوائي
+        # تشفير الباسورد إذا لم يكن مشفر
+        raw = self.password or ""
+        try:
+            identify_hasher(raw)
+        except:
+            self.password = make_password(raw)
+        super().save(*args, **kwargs)
+
+    def __str__(self):
+        return f"{self.name} ({self.national_id})"
+
+
+class CustomerWallet(models.Model):
+    customer = models.OneToOneField(Customer, on_delete=models.CASCADE, related_name='wallet')
+    balance  = models.DecimalField(max_digits=12, decimal_places=2, default=Decimal('0.00'))
+    def __str__(self): return f"Wallet of {self.customer.name}"
+
+class DriverWallet(models.Model):
+    driver          = models.OneToOneField(Driver, on_delete=models.CASCADE, related_name='wallet')
+    balance         = models.DecimalField(max_digits=12, decimal_places=2, default=Decimal('0.00'))
+    pending_balance = models.DecimalField(max_digits=12, decimal_places=2, default=Decimal('0.00'))
+
+    def __str__(self):
+        return f"Wallet of {self.driver.name}"
+
+
+@receiver(post_save, sender=Customer)
+def create_customer_wallet(sender, instance, created, **kwargs):
+    if created: CustomerWallet.objects.create(customer=instance)
+
+@receiver(post_save, sender=Driver)
+def create_driver_wallet(sender, instance, created, **kwargs):
+    if created: DriverWallet.objects.create(driver=instance)
+
+
+
+
+class Route(models.Model):
+    # حدفنا حقل name الأصلي من هنا
+    city = models.ForeignKey(City, on_delete=models.CASCADE, related_name='routes')
+    # … لا حاجة للحقول الستّة القديمة start_/end_…
+
+    @property
+    def display_name(self):
+        names = [stop.name for stop in self.stops.all()]
+        return " - ".join(names)
+
+    def __str__(self):
+        return self.display_name  # يظهر في الـ Admin وغيره تلقائيّاً
+
+
+
+
+class Vehicle(models.Model):
+    number = models.CharField(max_length=50, unique=True)
+    driver = models.ForeignKey(Driver, on_delete=models.CASCADE, related_name='vehicles')
+    def __str__(self): return f"{self.number} - {self.driver.name}"
+
+
+
+
+
+from django.db import models
+from django.utils import timezone
+from django.db.models import Q, UniqueConstraint
+from django.utils.crypto import get_random_string
+
+class Trip(models.Model):
+    driver          = models.ForeignKey('Driver', on_delete=models.CASCADE, related_name='trips')
+    vehicle         = models.ForeignKey('Vehicle', on_delete=models.CASCADE, related_name='trips')
+    route           = models.ForeignKey('Route', on_delete=models.CASCADE, related_name='trips')
+    date            = models.DateField(auto_now_add=True)
+    sequence_number = models.PositiveIntegerField()
+    start_time      = models.DateTimeField(null=True, blank=True)  # تم تعديل هذا السطر
+    end_time        = models.DateTimeField(null=True, blank=True)
+    in_zone         = models.BooleanField(default=False)
+    qr_token               = models.CharField(max_length=32, blank=True)
+    qr_token_generated_at  = models.DateTimeField(null=True, blank=True)
+
+    def __str__(self):
+        return f"Trip {self.sequence_number} by {self.driver.name}"
+
+    def get_qr_token(self):
+        now = timezone.now()
+        if not self.qr_token_generated_at or (now - self.qr_token_generated_at).total_seconds() >= 10:
+            token = get_random_string(32)
+            self.qr_token = token
+            self.qr_token_generated_at = now
+            self.save(update_fields=['qr_token', 'qr_token_generated_at'])
+        return self.qr_token
+
+    def start_trip(self):
+        self.start_time = timezone.now()
+        self.save(update_fields=['start_time'])
+
+    class Meta:
+        constraints = [
+            UniqueConstraint(
+                fields=['vehicle'],
+                condition=Q(end_time__isnull=True),
+                name='unique_active_trip_per_vehicle'
+            ),
+        ]
+
+
+
+
+class Payment(models.Model):
+    PAYMENT_METHOD_CHOICES = (
+        ('nfc','NFC Card'),('qr','QR'),('cash','Cash'),('unk','Unknown'),
+    )
+    customer       = models.ForeignKey(Customer, on_delete=models.CASCADE)
+    trip           = models.ForeignKey(Trip, on_delete=models.CASCADE, null=True, blank=True)
+    fare           = models.DecimalField(max_digits=10, decimal_places=2, default=Decimal('0.00'))
+    new_balance    = models.DecimalField(max_digits=10, decimal_places=2, default=Decimal('0.00'))
+    timestamp      = models.DateTimeField(auto_now_add=True)
+    payment_method = models.CharField(max_length=4, choices=PAYMENT_METHOD_CHOICES, default='unk')
+    def __str__(self): return f"Payment {self.id} for {self.customer.name}"
+
+class NFCCard(models.Model):
+    uid      = models.CharField(max_length=100, unique=True)
+    customer = models.ForeignKey(Customer, on_delete=models.CASCADE, related_name='nfc_cards')
+    def __str__(self): return f"NFC {self.uid} for {self.customer.name}"
+
+class Transfer(models.Model):
+    sender_phone = models.CharField(max_length=11, validators=[MinLengthValidator(11), RegexValidator(r'^\d{11}$')])
+    receiver_phone = models.CharField(max_length=11, validators=[MinLengthValidator(11), RegexValidator(r'^\d{11}$')])
+    amount = models.DecimalField(max_digits=12, decimal_places=2)
+    timestamp = models.DateTimeField(auto_now_add=True)
+
+    def __str__(self):
+        return f"Transfer {self.id}: {self.amount} from {self.sender_phone} to {self.receiver_phone}"
+
+
+
+@receiver(pre_save, sender=Driver)
+def _cache_old_in_zone(sender, instance, **kwargs):
+    if instance.pk:
+        try:
+            old = Driver.objects.get(pk=instance.pk)
+            instance._old_in_zone = old.in_zone
+        except Driver.DoesNotExist:
+            instance._old_in_zone = False
+
+@receiver(post_save, sender=Driver)
+def _on_in_zone_changed(sender, instance, created, **kwargs):
+    if created or not hasattr(instance, '_old_in_zone'):
+        return
+
+    was_in = instance._old_in_zone
+    now_in = instance.in_zone
+    if not was_in and now_in:
+        # طباعة للتتبع (اختياري)
+        print(f"[signal] Driver {instance.id} دخل in_zone – سيُنهى Trip ويرحّل الرصيد.")
+
+        try:
+            trip = Trip.objects.filter(
+                driver=instance, end_time__isnull=True
+            ).latest('start_time')
+            trip.end_time = timezone.now()
+            trip.in_zone  = True
+            trip.save(update_fields=['end_time', 'in_zone'])
+        except Trip.DoesNotExist:
+            return
+
+        try:
+            dw = DriverWallet.objects.get(driver=instance)
+            dw.balance         += dw.pending_balance
+            dw.pending_balance  = Decimal('0.00')
+            dw.save(update_fields=['balance', 'pending_balance'])
+        except DriverWallet.DoesNotExist:
+            pass
+
+
+
+# payments/models.py
+
+class Stop(models.Model):
+    route   = models.ForeignKey(
+        Route,
+        on_delete=models.CASCADE,
+        related_name='stops'
+    )
+    name    = models.CharField(max_length=100)
+    min_lat = models.FloatField()
+    min_lng = models.FloatField()
+    max_lat = models.FloatField()
+    max_lng = models.FloatField()
+
+    def __str__(self):
+        return self.name
+
+
+
+
+
+
+
+
+
+
+
+
+
+# ===== File: payments/serializers.py =====
+
+# File: payments/serializers.py
+
+from rest_framework import serializers
+from rest_framework.fields import SerializerMethodField
+from decimal import Decimal
+from django.utils import timezone
+from django.contrib.auth.hashers import make_password
+
+
+from .models import (
+    Governorate, City, Customer, Driver,
+    Vehicle, Route, Trip, NFCCard,
+    Transfer, Payment, DeviceLocation,
+    CustomerWallet, DriverWallet,Stop,
+)
+
+# ============================
+# Serializer for Governorate
+# ============================
+class GovernorateSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Governorate
+        fields = '__all__'
+
+
+# ============================
+# Serializer for City
+# ============================
+class CitySerializer(serializers.ModelSerializer):
+    class Meta:
+        model = City
+        fields = '__all__'
+
+
+# ============================
+# Serializer for Customer (Passenger)
+# ============================
+class CustomerSerializer(serializers.ModelSerializer):
+    balance    = SerializerMethodField()
+    governorate = serializers.PrimaryKeyRelatedField(
+        queryset=Governorate.objects.all(),
+        required=False,
+        allow_null=True
+    )
+    city        = serializers.PrimaryKeyRelatedField(
+        queryset=City.objects.all(),
+        required=False,
+        allow_null=True
+    )
+
+    class Meta:
+        model  = Customer
+        fields = '__all__'
+
+    def get_balance(self, obj):
+        return obj.wallet.balance
+
+    def validate_national_id(self, value):
+        if len(value) != 14 or not value.isdigit():
+            raise serializers.ValidationError("الرقم القومي يجب أن يكون 14 رقماً")
+        if Driver.objects.filter(national_id=value).exists():
+            raise serializers.ValidationError("الرقم القومي مسجل بالفعل كسائق")
+        return value
+
+    def validate_phone(self, value):
+        if len(value) != 11 or not value.isdigit():
+            raise serializers.ValidationError("رقم الهاتف يجب أن يكون 11 رقماً")
+        if Driver.objects.filter(phone=value).exists():
+            raise serializers.ValidationError("رقم الهاتف مسجل بالفعل كسائق")
+        return value
+
+    def create(self, validated_data):
+        pwd = validated_data.pop('password', None)
+        if pwd:
+            validated_data['password'] = make_password(pwd)
+        return super().create(validated_data)
+
+
+# ============================
+# Serializer for Driver
+# ============================
+from rest_framework import serializers
+from rest_framework.fields import SerializerMethodField
+from django.contrib.auth.hashers import make_password
+
+from .models import Driver, Governorate, City, Route, Customer
+
+from rest_framework import serializers
+from rest_framework.fields import SerializerMethodField
+from django.contrib.auth.hashers import make_password
+
+from .models import Driver, Governorate, City, Route, Customer
+
+class DriverSerializer(serializers.ModelSerializer):
+    assigned_route      = serializers.PrimaryKeyRelatedField(
+        queryset=Route.objects.all(),
+        required=False,
+        allow_null=True
+    )
+    assigned_route_name = SerializerMethodField()
+    vehicles            = SerializerMethodField()
+    governorate         = serializers.PrimaryKeyRelatedField(
+        queryset=Governorate.objects.all(),
+        required=False,
+        allow_null=True
+    )
+    city                = serializers.PrimaryKeyRelatedField(
+        queryset=City.objects.all(),
+        required=False,
+        allow_null=True
+    )
+
+    class Meta:
+        model = Driver
+        fields = [
+            'id',
+            'name', 'national_id', 'phone', 'email',
+            'password', 'license_number',
+            'driver_photo', 'license_photo',
+            'governorate', 'city', 'in_zone',
+            'assigned_device', 'assigned_route',
+            'assigned_route_name', 'vehicles',
+        ]
+        extra_kwargs = {
+            'password': {'write_only': True},
+            'in_zone':   {'read_only': True},
+            'assigned_device': {'read_only': True},
+        }
+        read_only_fields = (
+            'in_zone',
+            'assigned_route_name',
+            'vehicles',
+            'assigned_device',
+        )
+
+    def get_assigned_route_name(self, obj):
+        return obj.assigned_route.display_name if obj.assigned_route else None
+
+    def get_vehicles(self, obj):
+        return [v.id for v in obj.vehicles.all()]
+
+    def validate_national_id(self, value):
+        if len(value) != 14 or not value.isdigit():
+            raise serializers.ValidationError("يجب أن يكون 14 رقمًا")
+        if Customer.objects.filter(national_id=value).exists():
+            raise serializers.ValidationError("مسجل بالفعل كعميل")
+        return value
+
+    def validate_phone(self, value):
+        if len(value) != 11 or not value.isdigit():
+            raise serializers.ValidationError("يجب أن يكون 11 رقمًا")
+        if Customer.objects.filter(phone=value).exists():
+            raise serializers.ValidationError("مسجل بالفعل كعميل")
+        return value
+
+    def create(self, validated_data):
+        pwd = validated_data.pop('password', None)
+        if pwd:
+            validated_data['password'] = make_password(pwd)
+        return super().create(validated_data)
+
+# ============================
+# Serializer for Vehicle
+# ============================
+class VehicleSerializer(serializers.ModelSerializer):
+    class Meta:
+        model  = Vehicle
+        fields = '__all__'
+
+
+
+class StopSerializer(serializers.ModelSerializer):
+    class Meta:
+        model  = Stop
+        fields = ['id', 'name', 'min_lat', 'min_lng', 'max_lat', 'max_lng']
+
+
+
+
+# ============================
+# Serializer for Route
+# ============================
+class RouteSerializer(serializers.ModelSerializer):
+    stops        = StopSerializer(many=True, read_only=True)
+    display_name = serializers.SerializerMethodField()
+
+    class Meta:
+        model  = Route
+        fields = ['id', 'city', 'stops', 'display_name']
+
+    def get_display_name(self, obj):
+        return obj.display_name
+# ============================
+# Serializer for Trip (with nested route & vehicle)
+# ============================
+class TripSerializer(serializers.ModelSerializer):
+    route             = RouteSerializer(read_only=True)
+    vehicle           = VehicleSerializer(read_only=True)
+    route_name        = SerializerMethodField()
+    start_stop_name   = SerializerMethodField()
+    end_stop_name     = SerializerMethodField()
+    vehicle_number    = SerializerMethodField()
+    start_time_iso    = SerializerMethodField()
+    paid_passengers   = SerializerMethodField()
+
+    class Meta:
+        model  = Trip
+        fields = '__all__'
+
+    def get_route_name(self, obj):
+        return obj.route.display_name if obj.route else None
+
+    def get_start_stop_name(self, obj):
+        stops = obj.route.stops.all()
+        return stops[0].name if stops else None
+
+    def get_end_stop_name(self, obj):
+        stops = obj.route.stops.all()
+        return stops.last().name if stops else None
+
+    def get_vehicle_number(self, obj):
+        return obj.vehicle.number if obj.vehicle else None
+
+    def get_start_time_iso(self, obj):
+        return obj.start_time.isoformat() if obj.start_time else None
+
+    def get_paid_passengers(self, obj):
+        return obj.payment_set.count()
+
+
+# ============================
+# Serializer for CustomerWallet
+# ============================
+class CustomerWalletSerializer(serializers.ModelSerializer):
+    class Meta:
+        model  = CustomerWallet
+        fields = '__all__'
+
+
+# ============================
+# Serializer for DriverWallet
+# ============================
+class DriverWalletSerializer(serializers.ModelSerializer):
+    class Meta:
+        model  = DriverWallet
+        fields = '__all__'
+
+
+# ============================
+# Serializer for NFC Card
+# ============================
+class NFCCardSerializer(serializers.ModelSerializer):
+    class Meta:
+        model  = NFCCard
+        fields = '__all__'
+
+
+# ============================
+# Serializer for Transfer
+# ============================
+class TransferSerializer(serializers.ModelSerializer):
+    class Meta:
+        model  = Transfer
+        fields = '__all__'
+
+
+# ============================
+# Serializer for Payment  (بعد التعديل)
+# ============================
+class PaymentSerializer(serializers.ModelSerializer):
+    # ❶ للقراءة فقط: يُرجع تفاصيل الرحلة (كما كان) حتى لا يكسر الـ Flutter
+    trip = TripSerializer(read_only=True)
+
+    # ❷ للكتابة فقط: نستقبل trip_id ويُخزَّن في نفس الحقل الحقيقي trip
+    trip_id = serializers.PrimaryKeyRelatedField(
+        queryset=Trip.objects.all(),
+        source='trip',          # يحول trip_id ↔︎ trip object
+        write_only=True,
+        required=False,
+        allow_null=True,
+    )
+
+    customer_name = SerializerMethodField()
+
+    class Meta:
+        model  = Payment
+        fields = [
+            'id',
+            'customer',
+            'customer_name',
+            'trip',       # يُعرَض كـ JSON كامل
+            'trip_id',    # يُستقبَل في POST/PUT
+            'fare',
+            'new_balance',
+            'timestamp',
+            'payment_method',
+        ]
+        read_only_fields = ('timestamp',)  # (اشمعنا؟) لا يُسمح بتعديل الطابع الزمني
+
+    def get_customer_name(self, obj):
+        return obj.customer.name
+
+# ============================
+# Serializer for DeviceLocation
+# ============================
+class DeviceLocationSerializer(serializers.ModelSerializer):
+    class Meta:
+        model  = DeviceLocation
+        fields = '__all__'
+
+
+# ===== File: payments/token_serializers.py =====
+
+# File: payments/token_serializers.py
+
+from rest_framework import serializers
+from django.contrib.auth.hashers import check_password
+from rest_framework_simplejwt.tokens import AccessToken
+from .models import Customer, Driver
+
+
+class PassengerTokenSerializer(serializers.Serializer):
+    """
+    Serializer للتحقق من phone/password للراكب وإنشاء JWT + uid.
+    """
+    phone = serializers.CharField(required=True)
+    password = serializers.CharField(required=True, write_only=True)
+
+    def validate(self, attrs):
+        phone = attrs.get("phone")
+        password = attrs.get("password")
+        if not phone or not password:
+            raise serializers.ValidationError("يجب إدخال رقم الهاتف وكلمة المرور")
+        try:
+            user = Customer.objects.get(phone=phone)
+        except Customer.DoesNotExist:
+            raise serializers.ValidationError("رقم الهاتف أو كلمة المرور غير صحيحة")
+        if not check_password(password, user.password):
+            raise serializers.ValidationError("رقم الهاتف أو كلمة المرور غير صحيحة")
+        if not user.is_active:
+            raise serializers.ValidationError("الحساب غير مفعل")
+
+        # إصدار توكن باستخدام SimpleJWT
+        token = AccessToken.for_user(user)
+        # إضافة uid في الـpayload إن احتجت
+        token["uid"] = user.uid
+
+        return {"access": str(token)}
+
+
+class DriverTokenSerializer(serializers.Serializer):
+    """
+    Serializer للتحقق من phone/password/license_number للسائق وإنشاء JWT.
+    """
+    phone          = serializers.CharField(required=True)
+    password       = serializers.CharField(required=True, write_only=True)
+    license_number = serializers.CharField(required=True)
+
+    def validate(self, attrs):
+        phone          = attrs.get("phone")
+        password       = attrs.get("password")
+        license_number = attrs.get("license_number")
+        if not phone or not password or not license_number:
+            raise serializers.ValidationError("يجب إدخال رقم الهاتف وكلمة المرور ورقم الرخصة")
+        try:
+            user = Driver.objects.get(phone=phone, license_number=license_number)
+        except Driver.DoesNotExist:
+            raise serializers.ValidationError("بيانات تسجيل الدخول غير صحيحة")
+        if not check_password(password, user.password):
+            raise serializers.ValidationError("بيانات تسجيل الدخول غير صحيحة")
+
+        # إصدار توكن باستخدام SimpleJWT
+        token = AccessToken.for_user(user)
+        # إضافة driver_id في الـpayload ليُعاد للـclient إذا احتاج
+        token["driver_id"] = user.id
+
+        return {"access": str(token)}
+
+
+# ===== File: payments/token_views.py =====
+
+# File: payments/token_views.py
+
+from rest_framework import serializers, status
+from rest_framework.views import APIView
+from rest_framework.response import Response
+from django.contrib.auth.hashers import check_password
+from rest_framework_simplejwt.tokens import RefreshToken
+
+from .models import Customer, Driver
+
+
+class PassengerTokenSerializer(serializers.Serializer):
+    phone = serializers.CharField(required=True)
+    password = serializers.CharField(required=True, write_only=True)
+
+    def validate(self, attrs):
+        phone = attrs.get("phone")
+        password = attrs.get("password")
+        if not phone or not password:
+            raise serializers.ValidationError("يجب إدخال رقم الهاتف وكلمة المرور")
+        try:
+            user = Customer.objects.get(phone=phone)
+        except Customer.DoesNotExist:
+            raise serializers.ValidationError("رقم الهاتف أو كلمة المرور غير صحيحة")
+        if not check_password(password, user.password):
+            raise serializers.ValidationError("رقم الهاتف أو كلمة المرور غير صحيحة")
+        if not user.is_active:
+            raise serializers.ValidationError("الحساب غير مفعل")
+        attrs['user'] = user
+        return attrs
+
+
+class PassengerTokenView(APIView):
+    """
+    POST /api/passenger/token/
+    يبني أكسس+ريفريش توكن ويرجع uid
+    """
+    def post(self, request, *args, **kwargs):
+        serializer = PassengerTokenSerializer(data=request.data)
+        if not serializer.is_valid():
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+        user = serializer.validated_data['user']
+        refresh = RefreshToken.for_user(user)
+        access = refresh.access_token
+        access["uid"] = user.uid
+
+        return Response({
+            "refresh": str(refresh),
+            "access": str(access),
+            "uid":     user.uid
+        }, status=status.HTTP_200_OK)
+
+
+class DriverTokenSerializer(serializers.Serializer):
+    phone          = serializers.CharField(required=True)
+    password       = serializers.CharField(required=True, write_only=True)
+    license_number = serializers.CharField(required=True)
+
+    def validate(self, attrs):
+        phone          = attrs.get("phone")
+        password       = attrs.get("password")
+        license_number = attrs.get("license_number")
+        if not phone or not password or not license_number:
+            raise serializers.ValidationError("يجب إدخال رقم الهاتف وكلمة المرور ورقم الرخصة")
+        try:
+            user = Driver.objects.get(phone=phone, license_number=license_number)
+        except Driver.DoesNotExist:
+            raise serializers.ValidationError("بيانات تسجيل الدخول غير صحيحة")
+        if not check_password(password, user.password):
+            raise serializers.ValidationError("بيانات تسجيل الدخول غير صحيحة")
+        attrs['user'] = user
+        return attrs
+
+
+class DriverTokenView(APIView):
+    """
+    POST /api/driver/token/
+    يبني أكسس+ريفريش توكن ويرجع بيانات السائق
+    """
+    def post(self, request, *args, **kwargs):
+        serializer = DriverTokenSerializer(data=request.data)
+        if not serializer.is_valid():
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+        user = serializer.validated_data['user']
+        refresh = RefreshToken.for_user(user)
+        access = refresh.access_token
+        access["driver_id"] = user.id
+
+        wallet = user.wallet
+        return Response({
+            "refresh":         str(refresh),
+            "access":          str(access),
+            "driver_id":       user.id,
+            "name":            user.name,
+            "balance":         float(wallet.balance),
+            "pending_balance": float(wallet.pending_balance),
+        }, status=status.HTTP_200_OK)
+
+
+# ===== File: payments/urls.py =====
+
+# ===== File: payments/urls.py =====
+
+from django.urls import path
+from rest_framework_simplejwt.views import TokenRefreshView
+
+
+from .views import (
+    GovernorateListCreateAPIView,
+    CityListCreateAPIView,
+    CustomerListCreateAPIView,
+    SingleCustomerAPIView,
+    DriverListCreateAPIView,
+    SingleDriverAPIView,
+    VehicleListCreateAPIView,
+    RouteListCreateAPIView,
+    StartTripAPIView,
+    DeviceLocationUpdateAPIView,
+    ProcessPaymentAPIView,
+    TransferAPIView,
+    PaymentAPIView,
+    CustomerListAPIViewOriginal,
+    QrPaymentAPIViewOriginal,
+    qr_uid_payment,
+    CustomerWalletAPIView,
+    DriverWalletAPIView,
+    generate_trip_qr,
+    EndTripAPIView,
+    DriverActiveTripQRAPIView,
+    ActiveTripAPIView,
+    TripPaymentsListAPIView,
+    PublicQRPageView,
+    CustomerPaymentsAPIView,
+    device_active_trip,
+    update_balance,
+    SingleDriverByUidAPIView,
+    driver_make_payment,
+
+
+
+)
+
+from .token_views import PassengerTokenView, DriverTokenView
+
+urlpatterns = [
+    # إدارة المحافظ المنفصلة
+    path('wallets/customers/', CustomerWalletAPIView.as_view(), name='customer-wallets'),
+    path('wallets/drivers/',    DriverWalletAPIView.as_view(),   name='driver-wallets'),
+    path('wallets/drivers/<int:driver_id>/', DriverWalletAPIView.as_view()),
+
+
+    # Governorates & Cities
+    path('governorates/', GovernorateListCreateAPIView.as_view(), name='governorate-list-create'),
+    path('cities/',       CityListCreateAPIView.as_view(),       name='city-list-create'),
+
+    # Passenger registration & login
+    path('register/passenger/', CustomerListCreateAPIView.as_view(), name='register-passenger'),
+    path('passenger/token/',    PassengerTokenView.as_view(),        name='passenger-token'),
+
+    # Driver registration & login
+    path('register/driver/', DriverListCreateAPIView.as_view(), name='register-driver'),
+    path('driver/token/',    DriverTokenView.as_view(),         name='driver-token'),
+    path('token/refresh/',   TokenRefreshView.as_view(),        name='token_refresh'),
+
+    # Profiles
+    path('customers/<str:uid>/', SingleCustomerAPIView.as_view(), name='single-customer'),
+    path('driver/<int:id>/',      SingleDriverAPIView.as_view(),   name='single-driver'),
+
+    # Vehicles & Routes
+    path('vehicles/', VehicleListCreateAPIView.as_view(), name='vehicle-list-create'),
+    path('routes/',   RouteListCreateAPIView.as_view(),   name='route-list-create'),
+
+    # Trips
+    path('trips/start/',      StartTripAPIView.as_view(),         name='start-trip'),
+    path('trips/active/',     ActiveTripAPIView.as_view(),        name='active-trip'),
+    path('trips/active/qr/',  DriverActiveTripQRAPIView.as_view(), name='driver-active-qr'),
+    path('trips/<int:trip_id>/generate-qr/', generate_trip_qr,    name='generate-trip-qr'),
+    path('trips/end/',        EndTripAPIView.as_view(),          name='end-trip'),
+    path('payments/trip/',    TripPaymentsListAPIView.as_view(), name='trip-payments'),
+
+    # Device location
+    path('device/location/', DeviceLocationUpdateAPIView.as_view(), name='device-location'),
+
+    # Payments & transfers
+    path('payments/process/', ProcessPaymentAPIView.as_view(), name='process-payment'),
+    path('transfers/',        TransferAPIView.as_view(),        name='transfer'),
+    path('payments/',         PaymentAPIView.as_view(),         name='payment-original'),
+
+    # Legacy & QR
+    path('customers-list/', CustomerListAPIViewOriginal.as_view(), name='customer-list-original'),
+    path('qr-payment/',      QrPaymentAPIViewOriginal.as_view(),   name='qr-payment-original'),
+    path('qr-page/', PublicQRPageView.as_view(), name='qr-page'),
+    path('qr-uid-payment/',  qr_uid_payment,                     name='qr-uid-payment'),
+     # ... المسارات الموجودة
+    path('customers/<str:uid>/payments/', CustomerPaymentsAPIView.as_view(), name='customer-payments'),
+
+    path('device/active-trip/',device_active_trip,name='device-active-trip'),
+
+    path('payments/update_balance/', update_balance, name='update-balance'),
+
+    path('driver/uid/<str:uid>/', SingleDriverByUidAPIView.as_view(), name='driver-by-uid'),
+
+    path('driver/pay/', driver_make_payment, name='driver-pay'),
+
+
+
+
+
+]
+
+
+# ===== File: payments/views.py =====
+
+# File: payments/views.py
+
+import io
+import json
+import qrcode
+from decimal import Decimal
+
+from django.conf import settings
+from django.http import HttpResponse, JsonResponse
+from django.shortcuts import render, get_object_or_404
+from django.utils import timezone
+from django.views.decorators.csrf import csrf_exempt
+from django.utils.decorators import method_decorator
+from django.contrib.contenttypes.models import ContentType
+
+from rest_framework.views import APIView
+from rest_framework.response import Response
+from rest_framework import status
+from rest_framework.generics import ListCreateAPIView, RetrieveAPIView, ListAPIView
+from rest_framework.permissions import IsAuthenticated
+from rest_framework_simplejwt.authentication import JWTAuthentication
+from rest_framework.decorators import api_view
+from rest_framework.decorators import permission_classes
+from rest_framework.permissions import AllowAny
+
+
+
+from .auth import DriverJWTAuthentication
+from .models import (
+    Governorate, City, Customer, Driver,
+    Vehicle, Route, Trip, Payment,
+    Device, DeviceLocation,
+    CustomerWallet, DriverWallet, Transfer,
+    Driver,
+)
+from .serializers import (
+    GovernorateSerializer, CitySerializer,
+    CustomerSerializer, DriverSerializer,
+    VehicleSerializer, RouteSerializer,
+    TripSerializer, PaymentSerializer,
+    DeviceLocationSerializer,
+    CustomerWalletSerializer, DriverWalletSerializer,
+    TransferSerializer
+)
+
+# payments/views.py
+
+from django.views import View
+from django.shortcuts import render, get_object_or_404
+from django.http import HttpResponse
+
+
+
+
+
+# class UpdateBalanceAPIView(APIView):
+#     def post(self, request):
+#         uid        = request.data.get('uid','').strip()
+#         new_balance = Decimal(request.data.get('new_balance','0.00'))
+#         customer  = get_object_or_404(Customer, uid__iexact=uid)
+#         wallet    = get_object_or_404(CustomerWallet, customer=customer)
+#         wallet.balance = new_balance
+#         wallet.save(update_fields=['balance'])
+#         return Response({
+#             "status":      "ok",
+#             "new_balance": float(wallet.balance),
+#         }, status=status.HTTP_200_OK)
+
+
+
+
+class PublicQRPageView(View):
+    """
+    بيجيب driver_id من query param ويعرض صفحة QR.
+    """
+    def get(self, request):
+        driver_id = request.GET.get('driver_id')
+        if not driver_id:
+            return HttpResponse('Missing driver_id', status=400)
+
+        driver = get_object_or_404(Driver, id=driver_id)
+
+        try:
+            trip = Trip.objects.filter(
+                driver=driver,
+                end_time__isnull=True
+            ).latest('start_time')
+            context = {
+                'trip_id':        trip.id,
+                'vehicle_number': trip.vehicle.number
+            }
+        except Trip.DoesNotExist:
+            # لا توجد رحلة حالية
+            context = {'no_trip': True}
+
+        return render(request, 'payments/qrcode.html', context)
+
+
+
+class CustomerWalletAPIView(ListAPIView):
+    serializer_class       = CustomerWalletSerializer
+    permission_classes     = [IsAuthenticated]
+    authentication_classes = [JWTAuthentication]
+
+    def get_queryset(self):
+        qs = CustomerWallet.objects.all()
+        if cid := self.request.query_params.get('customer_id'):
+            qs = qs.filter(customer_id=cid)
+        return qs
+
+
+class DriverWalletAPIView(ListAPIView):
+    serializer_class       = DriverWalletSerializer
+    permission_classes     = [IsAuthenticated]
+    authentication_classes = [DriverJWTAuthentication]
+
+    def get_queryset(self):
+        qs = DriverWallet.objects.all()
+        did = self.request.query_params.get('driver_id') or self.kwargs.get('driver_id')
+        if did:
+            qs = qs.filter(driver_id=did)
+        return qs
+
+
+class ActiveTripAPIView(APIView):
+    authentication_classes = [DriverJWTAuthentication]
+    permission_classes     = [IsAuthenticated]
+
+    def get(self, request):
+        driver = get_object_or_404(Driver, id=request.user.id)
+        try:
+            trip = Trip.objects.filter(
+                driver=driver, end_time__isnull=True
+            ).latest('start_time')
+        except Trip.DoesNotExist:
+            return Response({'error': 'No active trip.'}, status=status.HTTP_404_NOT_FOUND)
+        return Response(TripSerializer(trip).data)
+
+
+class TripPaymentsListAPIView(ListAPIView):
+    serializer_class       = PaymentSerializer
+    permission_classes     = [IsAuthenticated]
+    authentication_classes = [DriverJWTAuthentication]
+
+    def get_queryset(self):
+        trip_id = self.request.query_params.get('trip_id')
+        return Payment.objects.filter(trip_id=trip_id)
+
+
+class GovernorateListCreateAPIView(ListCreateAPIView):
+    queryset         = Governorate.objects.all()
+    serializer_class = GovernorateSerializer
+
+
+class CityListCreateAPIView(ListCreateAPIView):
+    queryset         = City.objects.all()
+    serializer_class = CitySerializer
+
+    def get_queryset(self):
+        qs = super().get_queryset()
+        if gov_id := self.request.query_params.get('governorate'):
+            qs = qs.filter(governorate_id=gov_id)
+        return qs
+
+
+class CustomerListCreateAPIView(ListCreateAPIView):
+    queryset         = Customer.objects.all()
+    serializer_class = CustomerSerializer
+
+
+class SingleCustomerAPIView(RetrieveAPIView):
+    queryset         = Customer.objects.all()
+    serializer_class = CustomerSerializer
+    lookup_field     = 'uid'
+    lookup_url_kwarg = 'uid'
+
+
+class DriverListCreateAPIView(ListCreateAPIView):
+    queryset         = Driver.objects.all()
+    serializer_class = DriverSerializer
+
+
+class SingleDriverAPIView(RetrieveAPIView):
+    queryset         = Driver.objects.all()
+    serializer_class = DriverSerializer
+    lookup_field     = 'id'
+
+
+class VehicleListCreateAPIView(ListCreateAPIView):
+    queryset         = Vehicle.objects.all()
+    serializer_class = VehicleSerializer
+
+
+class RouteListCreateAPIView(ListCreateAPIView):
+    queryset         = Route.objects.all()
+    serializer_class = RouteSerializer
+
+
+class StartTripAPIView(APIView):
+    authentication_classes = [DriverJWTAuthentication]
+    permission_classes     = [IsAuthenticated]
+
+    def post(self, request):
+        driver  = request.user
+        vehicle = get_object_or_404(Vehicle, id=request.data.get('vehicle_id'))
+        route   = get_object_or_404(Route,   id=request.data.get('route_id'))
+
+        # تأكد أن المركبة تخص السائق
+        if vehicle.driver_id != driver.id:
+            return Response({'error': 'This vehicle does not belong to you.'},
+                            status=status.HTTP_400_BAD_REQUEST)
+
+        # تأكد أن للمسار نقاط توقف
+        if not route.stops.exists():
+            return Response({'error': 'المسار لا يحتوي على أية نقاط توقف (Stops).'},
+                            status=status.HTTP_400_BAD_REQUEST)
+
+        # حساب رقم التسلسل لليوم
+        today = timezone.localdate()
+        last  = Trip.objects.filter(driver=driver, date=today) \
+                             .order_by('-sequence_number') \
+                             .first()
+        seq   = last.sequence_number + 1 if last else 1
+
+        driver.in_zone = False
+        driver.save(update_fields=['in_zone'])
+
+        # إنشاء الرحلة بدون expected_passengers
+        trip = Trip.objects.create(
+            driver=driver,
+            vehicle=vehicle,
+            route=route,
+            sequence_number=seq,
+            start_time=timezone.now(),
+            in_zone=False,
+        )
+
+        # ربط السائق بالمسار الجديد
+        driver.assigned_route = route
+        driver.save(update_fields=['assigned_route'])
+
+        return Response(TripSerializer(trip).data, status=status.HTTP_201_CREATED)
+
+
+
+@method_decorator(csrf_exempt, name='dispatch')
+class DeviceLocationUpdateAPIView(APIView):
+    def post(self, request):
+        # 1) قراءة البيانات من الـ body
+        try:
+            data   = json.loads(request.body or '{}')
+            device = get_object_or_404(Device, id=data.get('device_id'))
+            lat    = float(data.get('latitude'))
+            lng    = float(data.get('longitude'))
+        except Exception:
+            return JsonResponse({'error': 'Invalid data'}, status=400)
+
+        # 2) حفظ الموقع
+        loc = DeviceLocation.objects.create(
+            device=device,
+            latitude=lat,
+            longitude=lng
+        )
+
+        # 3) جلب السائق والمسار المعيّن
+        try:
+            driver = device.driver
+        except Driver.DoesNotExist:
+            return JsonResponse({'error': 'Device not assigned'}, status=400)
+
+        route = driver.assigned_route
+        if not route:
+            return JsonResponse({'error': 'No route assigned'}, status=400)
+
+        # 4) تحقّق إذا دخل ضمن أي Stop
+        stops = route.stops.all()
+        in_zone = any(
+            (stop.min_lat  <= lat <= stop.max_lat  and
+             stop.min_lng  <= lng <= stop.max_lng)
+            for stop in stops
+        )
+
+        # 5) حدّث حالة in_zone في صفّ السائق
+        was_in = driver.in_zone
+        driver.in_zone = in_zone
+        driver.save(update_fields=['in_zone'])
+
+        # 6) لو انتقل للتوّ من خارج المنطقة إلى داخلها
+        if in_zone and not was_in:
+            # أ) إنهاء الرحلة الحالية
+            try:
+                trip = (
+                    Trip.objects
+                    .filter(driver=driver, end_time__isnull=True)
+                    .latest('start_time')
+                )
+                trip.end_time = timezone.now()
+                trip.in_zone  = True
+                trip.save(update_fields=['end_time', 'in_zone'])
+            except Trip.DoesNotExist:
+                pass
+
+            # ب) نقل الـ pending_balance إلى balance
+            try:
+                dw = get_object_or_404(DriverWallet, driver=driver)
+                dw.balance         += dw.pending_balance
+                dw.pending_balance  = Decimal('0.00')
+                dw.save(update_fields=['balance', 'pending_balance'])
+            except DriverWallet.DoesNotExist:
+                pass
+
+            # ج) إلغاء ربط المسار عن السائق إذا أحببت
+            # driver.assigned_route = None
+            # driver.save(update_fields=['assigned_route'])
+
+        # 7) أرسل الاستجابة
+        return JsonResponse({
+            'status':      'ok',
+            'in_zone':     int(in_zone),
+            'location_id': loc.id
+        })
+
+
+
+class ProcessPaymentAPIView(APIView):
+    """
+    POST /api/payments/process/
+    Body JSON: {
+      "uid": "<customer uid>",
+      "trip_id": <trip id>,
+      "fare": <decimal>,
+      "payment_method": "nfc" or "qr" or ...
+    }
+    """
+    def post(self, request):
+        uid     = request.data.get('uid', '').strip()
+        trip_id = request.data.get('trip_id')
+        pm      = request.data.get('payment_method', 'unk').strip().lower()
+        fare    = Decimal(request.data.get('fare', '0.00'))
+
+        # 1) جلب الرحلة
+        trip = get_object_or_404(Trip, id=trip_id)
+
+        # 2) جلب العميل
+        customer = get_object_or_404(Customer, uid__iexact=uid)
+
+        # 3) منع السائق من الدفع لنفسه
+        if trip.driver.uid and trip.driver.uid.strip().lower() == uid.lower():
+            return Response({"error": "You cannot pay for your own trip."},
+                            status=status.HTTP_403_FORBIDDEN)
+
+        # 4) جلب محفظة العميل وفحص الرصيد
+        customer_wallet = get_object_or_404(CustomerWallet, customer=customer)
+        if customer_wallet.balance < fare:
+            return Response({"error": "رصيد العميل غير كافٍ للدفع"},
+                            status=status.HTTP_400_BAD_REQUEST)
+
+        # 5) حساب الرصيد الجديد وإنشاء سجل الدفع
+        new_balance = customer_wallet.balance - fare
+        serializer = PaymentSerializer(data={
+            'customer':      customer.id,
+            'trip_id':     trip.id,
+            'fare':          fare,
+            'new_balance':   new_balance,
+            'payment_method': pm,
+        })
+        serializer.is_valid(raise_exception=True)
+        payment = serializer.save()
+
+        # 6) خصم الرصيد من العميل
+        customer_wallet.balance = new_balance
+        customer_wallet.save(update_fields=['balance'])
+
+        # 7) إضافة المبلغ إلى pending_balance للسائق
+        dw = get_object_or_404(DriverWallet, driver=trip.driver)
+        dw.pending_balance += fare
+        dw.save(update_fields=['pending_balance'])
+
+        # 8) إعادة البيانات للعميل
+        return Response({
+            "trip_id":     trip.id,
+            "fare":        float(payment.fare),
+            "new_balance": float(payment.new_balance),
+            "timestamp":   payment.timestamp.isoformat(),
+        }, status=status.HTTP_201_CREATED)
+
+
+
+class TransferAPIView(APIView):
+    def post(self, request):
+        # استرجاع البيانات المطلوبة من الـ request
+        from_phone = request.data.get('from_phone')
+        to_phone = request.data.get('to_phone')
+        amount = Decimal(request.data.get('amount', '0.00'))
+
+        # تحقق من وجود المرسل والمستقبل
+        sender = Customer.objects.filter(phone=from_phone).first() or Driver.objects.filter(phone=from_phone).first()
+        receiver = Customer.objects.filter(phone=to_phone).first() or Driver.objects.filter(phone=to_phone).first()
+
+        # إذا لم يتم العثور على المرسل أو المستقبل
+        if not sender or not receiver:
+            return Response({'error': 'العميل أو السائق غير موجود'}, status=status.HTTP_404_NOT_FOUND)
+
+        # التحقق من الرصيد
+        if isinstance(sender, Customer):
+            sender_wallet = get_object_or_404(CustomerWallet, customer=sender)
+        else:
+            sender_wallet = get_object_or_404(DriverWallet, driver=sender)
+
+        if isinstance(receiver, Customer):
+            receiver_wallet = get_object_or_404(CustomerWallet, customer=receiver)
+        else:
+            receiver_wallet = get_object_or_404(DriverWallet, driver=receiver)
+
+        # التحقق من أن المرسل يمتلك رصيد كافٍ
+        if sender_wallet.balance < amount:
+            return Response({'error': 'رصيد المرسل غير كافٍ'}, status=status.HTTP_400_BAD_REQUEST)
+
+        # خصم المبلغ من رصيد المرسل وإضافته إلى رصيد المستقبل
+        sender_wallet.balance -= amount
+        receiver_wallet.balance += amount
+
+        sender_wallet.save(update_fields=['balance'])
+        receiver_wallet.save(update_fields=['balance'])
+
+        # إنشاء سجل التحويل
+        ct_sw = ContentType.objects.get_for_model(sender_wallet)
+        ct_rw = ContentType.objects.get_for_model(receiver_wallet)
+
+        transfer = Transfer.objects.create(
+            sender_content_type=ct_sw,
+            sender_object_id=sender_wallet.id,
+            receiver_content_type=ct_rw,
+            receiver_object_id=receiver_wallet.id,
+            amount=amount
+        )
+
+        return Response(TransferSerializer(transfer).data, status=status.HTTP_201_CREATED)
+
+
+
+class PaymentAPIView(APIView):
+    def get(self, request, *args, **kwargs):
+        qs = Customer.objects.all()
+        return Response(CustomerSerializer(qs, many=True).data)
+    def post(self, request, *args, **kwargs):
+        return Response(status=status.HTTP_405_METHOD_NOT_ALLOWED)
+
+
+class CustomerListAPIViewOriginal(APIView):
+    def get(self, request, *args, **kwargs):
+        qs = Customer.objects.all()
+        return Response(CustomerSerializer(qs, many=True).data)
+
+
+class QrPaymentAPIViewOriginal(APIView):
+    def get(self, request, *args, **kwargs):
+        token = request.GET.get('token','')
+        if not token:
+            return Response({"error":"Missing token"}, status=400)
+        return Response({
+            "message":"OK","client_name":"Test",
+            "new_balance":45.0,"fare":5,"payment_method":"QR"
+        })
+
+
+
+
+@csrf_exempt
+def qr_uid_payment(request):
+    """
+    POST /api/qr-uid-payment/
+    body JSON: {
+      "token": "<QR token>",
+      "uid":   "<customer uid>",
+      "fare":  <decimal>
+    }
+    """
+    data  = json.loads(request.body or '{}')
+    token = data.get('token')
+    uid   = data.get('uid')
+    fare  = Decimal(data.get('fare', '0.00'))
+
+    if not token or not uid:
+        return JsonResponse({"error": "Missing token or uid"}, status=400)
+
+    # 1) جلب الرحلة عن طريق التوكن
+    trip = get_object_or_404(Trip, qr_token=token)
+
+    # 2) جلب العميل ومحفظته
+    customer = get_object_or_404(Customer, uid__iexact=uid)
+    wallet   = get_object_or_404(CustomerWallet, customer=customer)
+
+    # 3) التحقق من الرصيد
+    if wallet.balance < fare:
+        return JsonResponse({"error": "رصيد العميل غير كافٍ"}, status=400)
+
+    # 4) حساب الرصيد الجديد
+    new_balance = wallet.balance - fare
+
+    # 5) تسجيل الدفع مربوط بالرحلة
+    Payment.objects.create(
+        customer       = customer,
+        trip           = trip,
+        fare           = fare,
+        new_balance    = new_balance,
+        payment_method = 'qr'
+    )
+
+    # 6) تحديث رصيد العميل
+    wallet.balance = new_balance
+    wallet.save(update_fields=['balance'])
+
+    # 7) إضافة الفارق إلى pending_balance لمحفظة السائق
+    dw = get_object_or_404(DriverWallet, driver=trip.driver)
+    dw.pending_balance += fare
+    dw.save(update_fields=['pending_balance'])
+
+    return JsonResponse({
+        "status":      "ok",
+        "new_balance": float(new_balance),
+        "fare":        float(fare),
+    }, status=200)
+
+
+def generate_trip_qr(request, trip_id):
+    """
+    GET /api/trips/<trip_id>/generate-qr/
+    تُرجع صورة QR (PNG) إذا كانت الرحلة ما تزال نشطة،
+    وإلا تُرجع 410 Gone.
+    """
+    trip = get_object_or_404(Trip, id=trip_id)
+
+    # ⭐ لا تولّد QR إذا كانت الرحلة منتهية
+    if trip.end_time is not None:
+        return HttpResponse('Trip has ended', status=410)  # 410 Gone
+
+    token       = trip.get_qr_token()
+    public_url  = getattr(settings, 'PUBLIC_URL', '')
+
+    stops = list(trip.route.stops.order_by('id'))
+    start = stops[0].name if stops else ''
+    end   = stops[-1].name if stops else ''
+
+    qr_data = (
+        f"{public_url}/api/payments/process/"
+        f"?token={token}"
+        f"&trip_id={trip.id}"
+        f"&from={start}"
+        f"&to={end}"
+        f"&dateTime={trip.start_time.isoformat()}"
+        f"&vehicleNumber={trip.vehicle.number}"
+    )
+
+    img = qrcode.make(qr_data)
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    return HttpResponse(buf.getvalue(), content_type="image/png")
+
+# payments/views.py  – EndTripAPIView (بعد التعديل)
+
+class EndTripAPIView(APIView):
+    authentication_classes = [DriverJWTAuthentication]
+    permission_classes     = [IsAuthenticated]
+
+    def post(self, request):
+        driver = get_object_or_404(Driver, id=request.user.id)
+
+        try:
+            trip = (
+                Trip.objects
+                    .filter(driver=driver, end_time__isnull=True)
+                    .latest('start_time')
+            )
+        except Trip.DoesNotExist:
+            return Response(
+                {'error': 'No active trip to end.'},
+                status=status.HTTP_404_BAD_REQUEST
+            )
+
+        # ➤ أغلق الرحلة
+        trip.end_time = timezone.now()
+        trip.in_zone  = False     # لا نهتم بالموقع
+        trip.save(update_fields=['end_time', 'in_zone'])
+
+        # ➤ صفِّر in_zone في جدول السائق
+        driver.in_zone = False
+        driver.save(update_fields=['in_zone'])
+
+        # ✅  حوِّل pending_balance إلى balance دائماً
+        try:
+            dw = DriverWallet.objects.get(driver=driver)
+            dw.balance         += dw.pending_balance
+            dw.pending_balance  = Decimal('0.00')
+            dw.save(update_fields=['balance', 'pending_balance'])
+        except DriverWallet.DoesNotExist:
+            pass
+
+        return Response(TripSerializer(trip).data)
+
+
+class DriverActiveTripQRAPIView(APIView):
+    """
+    GET /api/driver/active-trip-qr/
+    تُرجع صورة QR للرحلة النشطة الحالية للسائق (إذا وجدت).
+    """
+    authentication_classes = [DriverJWTAuthentication]
+    permission_classes     = [IsAuthenticated]
+
+    def get(self, request):
+        driver = get_object_or_404(Driver, id=request.user.id)
+        try:
+            trip = Trip.objects.filter(
+                driver=driver,
+                end_time__isnull=True
+            ).latest('start_time')
+        except Trip.DoesNotExist:
+            return Response(
+                {'error': 'لا توجد رحلة نشطة حالياً.'},
+                status=status.HTTP_404_NOT_FOUND
+            )
+
+        token      = trip.get_qr_token()
+        public_url = getattr(settings, 'PUBLIC_URL', '')
+
+        stops = list(trip.route.stops.order_by('id'))
+        start = stops[0].name if stops else ''
+        end   = stops[-1].name if stops else ''
+
+        qr_data = (
+            f"{public_url}/api/payments/process/"
+            f"?token={token}"
+            f"&trip_id={trip.id}"
+            f"&from={start}"
+            f"&to={end}"
+        )
+
+        img = qrcode.make(qr_data)
+        buf = io.BytesIO()
+        img.save(buf, format="PNG")
+        return HttpResponse(buf.getvalue(), content_type="image/png")
+
+
+
+class CustomerPaymentsAPIView(ListAPIView):
+    """
+    ListAPIView لإرجاع جميع دفعات العميل بناءً على الـ uid
+    GET /api/customers/<uid>/payments/
+    """
+    serializer_class = PaymentSerializer
+
+    def get_queryset(self):
+        uid = self.kwargs['uid']
+        customer = get_object_or_404(Customer, uid=uid)
+        # رتب النتائج حسب الأحدث أولاً
+        return Payment.objects.filter(customer=customer).order_by('-timestamp')
+
+
+from rest_framework.permissions import AllowAny
+import logging
+
+logger = logging.getLogger(__name__)
+
+
+@api_view(['POST'])
+@permission_classes([AllowAny])
+def device_active_trip(request):
+    """
+    POST /api/device/active-trip/
+    Body JSON: { "device_id": <int> }
+    Response JSON:
+      - { "active": true,  "trip_id": <int> }  إذا في رحلة شغالة
+      - { "active": false }                    إذا مفيش رحلة
+    """
+    logger.debug("device_active_trip called with data: %r", request.data)
+
+    device_id = request.data.get('device_id')
+    if device_id is None:
+        logger.debug("Missing device_id in request")
+        return Response(
+            {'active': False, 'error': 'MISSING_DEVICE_ID'},
+            status=status.HTTP_200_OK
+        )
+
+    device = get_object_or_404(Device, id=device_id)
+    logger.debug("Found Device id=%d → driver id=%d", device.id, device.driver.id)
+
+    # ابحث عن أحدث رحلة لم تنتهِ بعد
+    active_trip = (
+        Trip.objects
+            .filter(driver=device.driver, end_time__isnull=True)
+            .order_by('-start_time')
+            .first()
+    )
+
+    if active_trip:
+        logger.debug("Active trip found: id=%d", active_trip.id)
+        return Response(
+            {'active': True, 'trip_id': active_trip.id},
+            status=status.HTTP_200_OK
+        )
+    else:
+        logger.debug("No active trip for device id=%d", device.id)
+        return Response(
+            {'active': False},
+            status=status.HTTP_200_OK
+        )
+
+
+
+
+
+
+
+
+@api_view(['POST'])
+@permission_classes([AllowAny])
+def update_balance(request):
+    uid       = request.data.get('uid', '').strip()
+    new_bal   = Decimal(request.data.get('new_balance', '0.00'))
+    action    = request.data.get('action', 'topup')
+    device_id = request.data.get('device_id')  # لازم ترسل device_id
+
+    # 1) جلب العميل ومحفظته
+    customer = get_object_or_404(Customer, uid__iexact=uid)
+    wallet   = get_object_or_404(CustomerWallet, customer=customer)
+
+    if action == 'topup':
+        # شحن الرصيد فقط
+        wallet.balance = new_bal
+        wallet.save(update_fields=['balance'])
+        return Response({
+            "status":      "recharged",
+            "new_balance": float(wallet.balance)
+        }, status=200)
+
+    elif action == 'payment':
+        # 2) احفظ الرصيد القديم وحسب المبلغ المدفوع
+        old_balance = wallet.balance
+        fare        = old_balance - new_bal
+
+        # 3) خصم الرصيد
+        wallet.balance = new_bal
+        wallet.save(update_fields=['balance'])
+
+        # 4) جلب الجهاز والسائق
+        device = get_object_or_404(Device, id=device_id)
+        driver = device.driver
+
+        # 5) جلب الرحلة النشطة للسائق
+        trip = (
+            Trip.objects
+                .filter(driver=driver, end_time__isnull=True)
+                .latest('start_time')
+        )
+
+        # 6) إنشاء سجل الدفع
+        Payment.objects.create(
+            customer       = customer,
+            trip           = trip,
+            fare           = fare,
+            new_balance    = new_bal,
+            payment_method = 'nfc',
+        )
+
+        # 7) إضافة إلى pending_balance للسائق
+        dw = get_object_or_404(DriverWallet, driver=driver)
+        dw.pending_balance += fare
+        dw.save(update_fields=['pending_balance'])
+
+        return Response({
+            "status":      "paid",
+            "fare":        float(fare),
+            "new_balance": float(wallet.balance)
+        }, status=200)
+
+    else:
+        return Response({"error": "Invalid action"}, status=400)
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def driver_make_payment(request):
+    uid = request.data.get('uid', '').strip()
+    amount = Decimal(request.data.get('amount', '0.00'))
+
+    # تحقق من السائق
+    try:
+        driver = Driver.objects.get(uid=uid)
+    except Driver.DoesNotExist:
+        return Response({"error": "Driver not found"}, status=404)
+
+    # تحقق من وجود محفظة
+    try:
+        wallet = DriverWallet.objects.get(driver=driver)
+    except DriverWallet.DoesNotExist:
+        return Response({"error": "Driver wallet not found"}, status=404)
+
+    # تحقق من الرصيد الكافي في balance فقط
+    if wallet.balance < amount:
+        return Response({"error": "Insufficient balance"}, status=400)
+
+    # خصم المبلغ من الرصيد الفعلي
+    wallet.balance -= amount
+    wallet.save(update_fields=['balance'])
+
+    return Response({
+        "status": "ok",
+        "new_balance": float(wallet.balance),
+        "message": f"{amount} تم خصمه"
+    }, status=200)
+
+class SingleDriverByUidAPIView(APIView):
+    """
+    GET /api/driver/uid/<uid>/
+    يرجع بيانات السائق بناءً على الـ uid
+    """
+    permission_classes = [AllowAny]  # أو IsAuthenticated إذا تبي محدد
+    def get(self, request, uid, *args, **kwargs):
+        driver = get_object_or_404(Driver, uid=uid)
+        serializer = DriverSerializer(driver)
+        return Response(serializer.data)
+
+
+
+class QREnterUIDView(View):
+    """
+    GET /qr-enter-uid/?trip_id=...
+    يعرض النموذج لإدخال الـ UID ثم يرسله لـ API
+    """
+    def get(self, request):
+        trip_id = request.GET.get('trip_id')
+        return render(request, 'payments/qr_enter_uid.html', {
+            'trip_id': trip_id,
+            # إذا كنت تمرّر قيمة fare ديناميكياً، أضفها هنا أيضاً:
+            'fare': 7,
+        })
+
+# ===== File: myproject/settings.py =====
+
+"""
+Django settings for myproject project.
+
+Generated by 'django-admin startproject' using Django 5.1.7.
+
+For more information on this file, see
+https://docs.djangoproject.com/en/5.1/topics/settings/
+
+For the full list of settings and their values, see
+https://docs.djangoproject.com/en/5.1/ref/settings/
+"""
+
+import pathlib
+
+BASE_DIR = pathlib.Path(__file__).resolve().parent.parent
+
+
+# SECURITY WARNING: keep the secret key used in production secret!
+SECRET_KEY = 'django-insecure-3m7hq^z)he5v+pnw53&=(x!cip=+pq3)gx!6+2-8kfu=^lmydy'
+
+# SECURITY WARNING: don't run with debug turned on in production!
+DEBUG = True
+
+ALLOWED_HOSTS = [
+    'ahmed80800.pythonanywhere.com',
+    'localhost',
+    '127.0.0.1',
+    '192.168.1.8',
+    '192.168.43.154',
+    '127.0.0.1',
+]
+
+REST_FRAMEWORK = {
+  'DEFAULT_AUTHENTICATION_CLASSES': (
+    'payments.auth.DriverJWTAuthentication',
+    'rest_framework_simplejwt.authentication.JWTAuthentication',
+  )
+}
+
+
+
+# Application definition
+
+INSTALLED_APPS = [
+    'django.contrib.admin',
+    'django.contrib.auth',
+    'django.contrib.contenttypes',
+    'django.contrib.sessions',
+    'django.contrib.messages',
+    'django.contrib.staticfiles',
+    'utils',
+    'payments',           # تطبيقك الخاص
+    'rest_framework',     # لتسهيل بناء الـ API
+    'corsheaders',        # للسماح بالطلبات من مصادر خارجية (CORS)
+]
+
+# السماح لجميع المصادر للطلبات الخارجية (يمكن ضبطه لاحقاً للأمان)
+CORS_ALLOW_ALL_ORIGINS = True
+
+MIDDLEWARE = [
+    'corsheaders.middleware.CorsMiddleware',  # يجب أن يكون في البداية
+    'django.middleware.security.SecurityMiddleware',
+    'django.contrib.sessions.middleware.SessionMiddleware',
+    'django.middleware.common.CommonMiddleware',
+    'django.middleware.csrf.CsrfViewMiddleware',
+    'django.contrib.auth.middleware.AuthenticationMiddleware',
+    'django.contrib.messages.middleware.MessageMiddleware',
+    'django.middleware.clickjacking.XFrameOptionsMiddleware',
+]
+
+ROOT_URLCONF = 'myproject.urls'
+
+TEMPLATES = [
+    {
+        'BACKEND': 'django.template.backends.django.DjangoTemplates',
+        'DIRS': [ BASE_DIR / 'templates' ],  # مجلد القوالب العام
+        'APP_DIRS': True,                    # يبحث تلقائيًا في كل app/templates/
+        'OPTIONS': {
+            'context_processors': [
+                'django.template.context_processors.debug',
+                'django.template.context_processors.request',
+                'django.contrib.auth.context_processors.auth',
+                'django.contrib.messages.context_processors.messages',
+            ],
+        },
+    },
+]
+
+WSGI_APPLICATION = 'myproject.wsgi.application'
+
+
+# Database
+# https://docs.djangoproject.com/en/5.1/ref/settings/#databases
+DATABASES = {
+    'default': {
+        'ENGINE': 'django.db.backends.sqlite3',
+        'NAME': BASE_DIR / 'db.sqlite3',
+    }
+}
+
+# DATABASES = {
+#     'default': {
+#         'ENGINE': 'django.db.backends.mysql',
+#         'NAME': 'ahmed80800$PTP_ay',
+#         'USER': 'ahmed80800',
+#         'PASSWORD': 'AHMEDfarag1011',
+#         'HOST': 'ahmed80800.mysql.pythonanywhere-services.com',
+#     }
+# }
+
+
+# Password validation
+# https://docs.djangoproject.com/en/5.1/ref/settings/#auth-password-validators
+AUTH_PASSWORD_VALIDATORS = []
+
+
+# Internationalization
+# https://docs.djangoproject.com/en/5.1/topics/i18n/
+LANGUAGE_CODE = 'en-us'
+TIME_ZONE = 'Africa/Cairo'
+USE_I18N = True
+USE_TZ = True
+
+
+# Static files (CSS, JavaScript, Images)
+# https://docs.djangoproject.com/en/5.1/howto/static-files/
+STATIC_URL = '/static/'
+STATICFILES_DIRS = [
+    BASE_DIR / 'static',
+]
+STATIC_ROOT = BASE_DIR / 'staticfiles'
+
+
+# Media files (uploads)
+MEDIA_URL = '/media/'
+MEDIA_ROOT = BASE_DIR / 'media'
+
+
+
+
+
+
+
+
+
+# ------------------ Aggregation settings ------------------
+
+# ملفات الأكواد التي نريد تجميعها (مقارنة بـ BASE_DIR)
+AGGREGATE_CODE_FILES = [
+    # من مجلد payments
+    'payments/admin.py',
+    'payments/models.py',
+    'payments/serializers.py',
+    'payments/token_serializers.py',
+    'payments/token_views.py',
+    'payments/urls.py',
+    'payments/views.py',
+
+    # من مجلد myproject (الدليل الرئيسي للمشروع)
+    'myproject/settings.py',
+    'myproject/urls.py',
+]
+
+# مسار واسم الملف الناتج (سيُنشأ في جذر المشروع)
+AGGREGATE_CODE_OUTPUT = BASE_DIR / 'all_code.txt'
+
+
+
+
+
+
+LOGGING = {
+    'version': 1,
+    'disable_existing_loggers': False,
+    'handlers': {
+        'console': {
+            'class': 'logging.StreamHandler',
+        },
+    },
+    'loggers': {
+        'payments.views': {
+            'handlers': ['console'],
+            'level': 'DEBUG',
+        },
+    },
+}
+
+
+# ===== File: myproject/urls.py =====
+
+from django.contrib import admin
+from django.urls import path, include
+from django.http import HttpResponse
+from rest_framework_simplejwt.views import TokenRefreshView
+from django.conf import settings
+from django.conf.urls.static import static
+
+
+def home(request):
+    return HttpResponse("يا هلا والله")
+
+urlpatterns = [
+    path('', home, name='home'),
+    path('admin/', admin.site.urls),
+    # واجهات تطبيق المدفوعات
+    path('api/', include('payments.urls')),
+    # JWT refresh
+    path('api/jwt/refresh/', TokenRefreshView.as_view(), name='token_refresh'),
+]
+
+if settings.DEBUG:
+    urlpatterns += static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)
+
+#essa
+
+

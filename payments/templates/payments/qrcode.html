@@ -1,83 +1,151 @@
+{% load static %}
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8">
+  <meta charset="UTF-8" />
   <title>QR Code Payment</title>
+
   <style>
+    /* ---------------- Fonts & Theme ---------------- */
     @font-face {
       font-family: 'SpantaranRegular';
-      src: url('/static/payments/fonts/SpantaranRegular.ttf') format('truetype');
-      font-weight: normal;
-      font-style: normal;
+      src: url('{% static "payments/fonts/SpantaranRegular.ttf" %}') format('truetype');
     }
+
     body {
-      background-color: #000; /* خلفية سوداء */
-      margin: 0;
-      padding: 0;
-      font-family: Arial, sans-serif; /* الخط الافتراضي */
-      overflow: hidden;
-      display: flex;
-      flex-direction: column;
-      align-items: center;
-      justify-content: center;
-      height: 100vh;
-      color: #FFA500; /* نص برتقالي */
+      background:#000;
+      margin:0;
+      padding:0;
+      font-family:Arial, sans-serif;
+      display:flex;
+      flex-direction:column;
+      align-items:center;
+      justify-content:center;
+      height:100vh;
+      color:#FFA500;
+      text-align:center;
+      overflow:hidden;
     }
-    .left-logo, .right-logo {
-      position: absolute;
-      top: 50%;
-      transform: translateY(-50%);
-      opacity: 0.1;
-      width: 150px;  /* زيادة حجم اللوجو */
-      height: auto;
+
+    /* ---------------- Background logos ---------------- */
+    .left-logo,.right-logo{
+      position:absolute;
+      top:50%;
+      transform:translateY(-50%);
+      opacity:.1;
+      width:150px;
     }
-    .left-logo { left: 30px; }
-    .right-logo { right: 30px; }
-    .content {
-      z-index: 1;
-      text-align: center;
-      padding: 0 20px;
-      width: 100%;
-      box-sizing: border-box;
+    .left-logo{left:30px}
+    .right-logo{right:30px}
+
+    /* ---------------- Headings & Info ---------------- */
+    h1{
+      margin-bottom:40px;
+      font:normal 3em 'SpantaranRegular',sans-serif;
+      color:#fff;
     }
-    h1 {
-      margin-bottom: 40px;
-      font-size: 3em;  /* تكبير العنوان */
-      font-family: 'SpantaranRegular', sans-serif;
-      font-weight: normal;
-      color: #fff;
+    .car-info,.trip-info{
+      margin-top:20px;
+      font-size:1.8em;
+      color:#fff!important;
+      font-family:"Times New Roman",serif;
     }
-    img#qrImage {
-      width: 500px;  /* تكبير رمز الـ QR */
-      height: 500px;
-      border: 5px solid #FFA500;
-      box-shadow: 0 0 40px rgba(255, 165, 0, 0.8);
+    .trip-info{margin-top:10px;font-size:1.6em;color:#FFA500}
+
+    /* ---------------- QR image ---------------- */
+    #qrImage{
+      width:500px;height:500px;
+      border:5px solid #FFA500;
+      box-shadow:0 0 40px rgba(255,165,0,.8);
+      animation:glow 2s ease-in-out infinite;
     }
-    .car-info {
-      margin-top: 30px;
-      font-size: 2em;  /* تكبير نص رقم السيارة */
-      color: #fff !important;
-      font-family: "Times New Roman", serif;
-      white-space: normal;
+
+    /* ---------------- Messages ---------------- */
+    .no-trip{
+      font:2.5em 'SpantaranRegular',sans-serif;
+      color:#fff;
+      padding:20px;
+      border:3px solid #FFA500;
+      border-radius:15px;
+      background:rgba(0,0,0,.5);
+      box-shadow:0 0 20px rgba(255,165,0,.6);
+    }
+
+    @keyframes glow{
+      0%{box-shadow:0 0 40px rgba(255,165,0,.8)}
+      50%{box-shadow:0 0 60px rgba(255,200,50,1)}
+      100%{box-shadow:0 0 40px rgba(255,165,0,.8)}
     }
   </style>
+
+  {% if not no_trip %}
   <script>
-    function refreshQR() {
-      document.getElementById("qrImage").src = "/payments/qr_img/?t=" + new Date().getTime();
+    /*
+      المنطق:
+      - يستدعي /generate-trip-qr/ كل 5 ثوانٍ.
+      - إذا رجع 410 → أخفِ QR وأظهِر الرسالة ثم أعد تحميل الصفحة بعد 5 ثوانٍ
+        حتى يحصل على trip_id جديد أو no_trip.
+      - إذا رجع 200 → حدّث صورة الـ QR وأخفِ رسالة الانتهاء.
+    */
+    const qrUrl      = "{% url 'generate-trip-qr' trip_id=trip_id %}";
+    const intervalMs = 5000;          // 5 ثوانٍ
+    let   qrImg, endedMsg;
+
+    async function refreshQR(){
+      try{
+        const res = await fetch(qrUrl + "?t=" + Date.now());
+
+        if(res.status === 410){                     // الرحلة انتهت
+          qrImg.style.display   = "none";
+          endedMsg.style.display = "block";
+          setTimeout(()=>location.reload(), intervalMs); // إعادة تحميل بعد 5 ثوانٍ
+          return;
+        }
+
+        if(res.ok){                                // رحلة نشطة
+          const blob = await res.blob();
+          qrImg.src            = URL.createObjectURL(blob);
+          qrImg.style.display  = "block";
+          endedMsg.style.display = "none";
+        }
+      }catch(_){
+        /* خطأ شبكة – المحاولة التالية ستعالج الأمر */
+      }
     }
-    setInterval(refreshQR, 80000);
-    window.onload = refreshQR;
+
+    window.onload = ()=>{
+      qrImg   = document.getElementById("qrImage");
+      endedMsg= document.getElementById("tripEndedMsg");
+      refreshQR();                                // أول تحميل
+      setInterval(refreshQR, intervalMs);         // كل 5 ثوانٍ دائمًا
+    };
   </script>
+  {% endif %}
 </head>
 <body>
-  <!-- اللوجو على الجانبين -->
-  <img src="/static/payments/images/LOGO.png" alt="Left Logo" class="left-logo">
-  <img src="/static/payments/images/LOGO.png" alt="Right Logo" class="right-logo">
-  
-  <div class="content">
+  <!-- decorative logos -->
+  <img src="{% static 'payments/images/LOGO.png' %}" alt="Logo" class="left-logo" />
+  <img src="{% static 'payments/images/LOGO.png' %}" alt="Logo" class="right-logo" />
+
+  {% if no_trip %}
+    <div class="no-trip">
+      لم تبدأ الرحلة بعد..<br>
+      انتظر إلى أن يبدأ السائق رحلته
+    </div>
+  {% else %}
     <h1>Scan QR Code to Pay</h1>
-    <img id="qrImage" src="" alt="QR Code Payment">
-    <div class="car-info">Car Number : a5541</div>
-  </div>
+
+    <!-- QR code image -->
+    <img id="qrImage" src="" alt="QR Code Payment" />
+
+    <!-- message shown when trip ends -->
+    <div id="tripEndedMsg" class="no-trip" style="display:none;">
+      انتهت الرحلة.. لا يوجد كود دفع الآن
+    </div>
+
+    <!-- car & trip info -->
+    <div class="car-info">Car Number: {{ vehicle_number }}</div>
+    <div class="trip-info">Trip Number: {{ trip_id }}</div>
+  {% endif %}
 </body>
 </html>
